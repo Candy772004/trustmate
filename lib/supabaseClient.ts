@@ -6,17 +6,17 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-if (!supabaseUrl || !supabaseAnonKey) {
+export const isSupabaseConfigured = !!supabaseUrl && !!supabaseAnonKey;
+
+if (!isSupabaseConfigured) {
   console.warn('Supabase URL or Anon Key is missing. Check your .env value.');
 } else {
   console.log('Supabase Client initializing with URL:', supabaseUrl);
 }
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.error('Supabase URL or Anon Key is missing. Please check your .env.local file.');
-}
-
+// Prevent crash if variables are missing by providing fallback
+// The app should check isSupabaseConfigured and show a UI warning instead of using this client
 export const supabase = createClient(
-  supabaseUrl || '',
-  supabaseAnonKey || ''
+  supabaseUrl || 'https://placeholder.supabase.co',
+  supabaseAnonKey || 'placeholder'
 );
