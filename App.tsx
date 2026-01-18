@@ -44,6 +44,7 @@ import {
 import { ScreenState, User, UserRole, ServiceCategory, Booking, BookingStatus, Technician, PaymentMethod, Review, Notification } from './types';
 import { SERVICES, MOCK_BOOKINGS, MOCK_TECHNICIAN } from './constants';
 import { loginUser, registerUser, sendOtp, resetUserPassword, sendBookingConfirmationEmail } from './services/authService';
+import { supabase } from './lib/supabaseClient';
 import { Button } from './components/Button';
 import { Input } from './components/Input';
 import { ServiceCard } from './components/ServiceCard';
@@ -230,13 +231,75 @@ const App: React.FC = () => {
   useEffect(() => {
     let interval: any;
     if (currentScreen === ScreenState.TRACKING) {
-      setTrackingProgress(0);
-      interval = setInterval(() => {
-        setTrackingProgress(prev => (prev < 100 ? prev + 0.2 : prev));
-      }, 50);
+      if (!trackingBooking) {
+        setTrackingProgress(0);
+        return;
+      }
+
+      // If status is ON_THE_WAY, animate progress
+      if (trackingBooking.status === BookingStatus.ON_THE_WAY) {
+        interval = setInterval(() => {
+          setTrackingProgress(prev => (prev < 90 ? prev + 0.5 : prev));
+        }, 100);
+      } else if (trackingBooking.status === BookingStatus.IN_PROGRESS) {
+        setTrackingProgress(100); // Arrived
+      } else {
+        setTrackingProgress(0);
+      }
     }
     return () => clearInterval(interval);
-  }, [currentScreen]);
+  }, [currentScreen, trackingBooking]);
+
+  // --- Realtime Subscription ---
+  useEffect(() => {
+    if (!currentUser) return;
+
+    console.log('Setting up realtime subscription for user:', currentUser.id);
+
+    const subscription = supabase
+      .channel('public:bookings')
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'bookings',
+          filter: `user_id=eq.${currentUser.id}`
+        },
+        (payload) => {
+          console.log('Realtime update received:', payload);
+          const updatedBooking = payload.new as Booking;
+
+          // Update local list
+          setUserBookings(prev => prev.map(b =>
+            b.id === updatedBooking.id ? { ...b, ...updatedBooking } : b
+          ));
+
+          // Update tracking if active
+          if (trackingBooking?.id === updatedBooking.id) {
+            setTrackingBooking(prev => ({ ...prev!, ...updatedBooking }));
+          }
+
+          // Trigger Notification based on status change
+          const serviceName = SERVICES.find(s => s.id === updatedBooking.serviceId)?.label || 'Service';
+
+          if (updatedBooking.status === BookingStatus.CONFIRMED) {
+            addNotification('Booking Confirmed', `Your ${serviceName} request has been confirmed. Technician is preparing.`);
+          } else if (updatedBooking.status === BookingStatus.ON_THE_WAY) {
+            addNotification('Technician On The Way', `Mike is on the way to your location.`);
+          } else if (updatedBooking.status === BookingStatus.IN_PROGRESS) {
+            addNotification('Service Started', `Work has begun on your ${serviceName}.`);
+          } else if (updatedBooking.status === BookingStatus.COMPLETED) {
+            addNotification('Service Completed', `Your ${serviceName} is complete. Please rate your experience!`);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(subscription);
+    };
+  }, [currentUser, trackingBooking]);
 
   // --- Helpers for formatting ---
   const formatCardNumber = (value: string) => {
@@ -2714,37 +2777,53 @@ const App: React.FC = () => {
           {/* Handle Bar */}
           <div className="w-12 h-1 bg-slate-200 rounded-full mx-auto mb-6"></div>
 
+
           {/* Status Timeline */}
           <div className="flex items-center justify-between mb-8 px-2 relative">
             {/* Progress Line */}
             <div className="absolute top-1/2 left-4 right-4 h-0.5 bg-slate-100 -z-10"></div>
-            <div className="absolute top-1/2 left-4 h-0.5 bg-brand-yellow -z-10 transition-all duration-1000" style={{ width: '60%' }}></div>
+            <div className="absolute top-1/2 left-4 h-0.5 bg-brand-yellow -z-10 transition-all duration-1000"
+              style={{
+                width:
+                  trackingBooking?.status === BookingStatus.CONFIRMED ? '30%' :
+                    trackingBooking?.status === BookingStatus.ON_THE_WAY ? '60%' :
+                      trackingBooking?.status === BookingStatus.IN_PROGRESS ? '80%' :
+                        trackingBooking?.status === BookingStatus.COMPLETED ? '100%' : '5%'
+              }}></div>
 
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-6 h-6 rounded-full bg-brand-yellow flex items-center justify-center text-brand-dark shadow-sm">
+            {/* Step 1: Confirmed */}
+            <div className={`flex flex-col items-center gap-2 ${[BookingStatus.CONFIRMED, BookingStatus.ON_THE_WAY, BookingStatus.IN_PROGRESS, BookingStatus.COMPLETED].includes(trackingBooking?.status as BookingStatus) ? 'opacity-100' : 'opacity-50'}`}>
+              <div className={`w-6 h-6 rounded-full bg-brand-yellow flex items-center justify-center text-brand-dark shadow-sm`}>
                 <Check size={12} strokeWidth={3} />
               </div>
               <span className="text-[10px] font-bold text-slate-800">Confirmed</span>
             </div>
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-6 h-6 rounded-full bg-brand-yellow flex items-center justify-center text-brand-dark shadow-sm ring-4 ring-yellow-50">
-                <div className="w-2 h-2 bg-brand-dark rounded-full animate-pulse"></div>
+
+            {/* Step 2: On The Way */}
+            <div className={`flex flex-col items-center gap-2 ${[BookingStatus.ON_THE_WAY, BookingStatus.IN_PROGRESS, BookingStatus.COMPLETED].includes(trackingBooking?.status as BookingStatus) ? 'opacity-100' : 'opacity-50'}`}>
+              <div className={`w-6 h-6 rounded-full ${trackingBooking?.status === BookingStatus.ON_THE_WAY ? 'bg-brand-yellow ring-4 ring-yellow-50' : 'bg-white border-2 border-slate-200'} flex items-center justify-center text-brand-dark shadow-sm`}>
+                {trackingBooking?.status === BookingStatus.ON_THE_WAY ? <div className="w-2 h-2 bg-brand-dark rounded-full animate-pulse"></div> : <div className="w-2 h-2 bg-slate-300 rounded-full"></div>}
               </div>
-              <span className="text-[10px] font-bold text-slate-800">On the way</span>
+              <span className="text-[10px] font-bold text-slate-800">On Way</span>
             </div>
-            <div className="flex flex-col items-center gap-2 opacity-50">
-              <div className="w-6 h-6 rounded-full bg-white border-2 border-slate-200 flex items-center justify-center">
-                <div className="w-2 h-2 bg-slate-300 rounded-full"></div>
+
+            {/* Step 3: Working */}
+            <div className={`flex flex-col items-center gap-2 ${[BookingStatus.IN_PROGRESS, BookingStatus.COMPLETED].includes(trackingBooking?.status as BookingStatus) ? 'opacity-100' : 'opacity-50'}`}>
+              <div className={`w-6 h-6 rounded-full ${trackingBooking?.status === BookingStatus.IN_PROGRESS ? 'bg-brand-yellow ring-4 ring-yellow-50' : 'bg-white border-2 border-slate-200'} flex items-center justify-center`}>
+                {trackingBooking?.status === BookingStatus.IN_PROGRESS ? <Wrench size={12} className="text-brand-dark" /> : <div className="w-2 h-2 bg-slate-300 rounded-full"></div>}
               </div>
               <span className="text-[10px] font-bold text-slate-500">Working</span>
             </div>
-            <div className="flex flex-col items-center gap-2 opacity-50">
-              <div className="w-6 h-6 rounded-full bg-white border-2 border-slate-200 flex items-center justify-center">
-                <div className="w-2 h-2 bg-slate-300 rounded-full"></div>
+
+            {/* Step 4: Done */}
+            <div className={`flex flex-col items-center gap-2 ${[BookingStatus.COMPLETED].includes(trackingBooking?.status as BookingStatus) ? 'opacity-100' : 'opacity-50'}`}>
+              <div className={`w-6 h-6 rounded-full ${trackingBooking?.status === BookingStatus.COMPLETED ? 'bg-green-500 text-white' : 'bg-white border-2 border-slate-200'} flex items-center justify-center`}>
+                {trackingBooking?.status === BookingStatus.COMPLETED ? <Check size={12} /> : <div className="w-2 h-2 bg-slate-300 rounded-full"></div>}
               </div>
               <span className="text-[10px] font-bold text-slate-500">Done</span>
             </div>
           </div>
+
 
           {/* Technician Info */}
           <div className="flex items-center gap-4 mb-6">

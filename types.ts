@@ -33,6 +33,9 @@ export enum UserRole {
 
 export enum BookingStatus {
   UPCOMING = 'UPCOMING',
+  CONFIRMED = 'CONFIRMED',
+  ON_THE_WAY = 'ON_THE_WAY',
+  IN_PROGRESS = 'IN_PROGRESS',
   COMPLETED = 'COMPLETED',
   CANCELLED = 'CANCELLED'
 }
