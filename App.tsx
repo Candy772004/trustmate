@@ -39,12 +39,15 @@ import {
   KeyRound,
   Navigation,
   PhoneCall,
-  Zap
+  Zap,
+  Bug,
+  Sparkles
 } from 'lucide-react';
 import { ScreenState, User, UserRole, ServiceCategory, Booking, BookingStatus, Technician, PaymentMethod, Review, Notification } from './types';
 import { SERVICES, MOCK_BOOKINGS, MOCK_TECHNICIAN } from './constants';
 import { loginUser, registerUser, sendOtp, resetUserPassword, sendBookingConfirmationEmail } from './services/authService';
 import { supabase } from './lib/supabaseClient';
+import { fetchServices, fetchUserBookings, createBooking, createTechnicianProfile, fetchTechnicianProfile, submitBookingReview } from './services/dataService';
 import { Button } from './components/Button';
 import { Input } from './components/Input';
 import { ServiceCard } from './components/ServiceCard';
@@ -182,6 +185,7 @@ const App: React.FC = () => {
   });
 
   // Booking Flow State
+  const [services, setServices] = useState<ServiceCategory[]>(SERVICES);
   const [selectedService, setSelectedService] = useState<ServiceCategory | null>(null);
   const [selectedTechnician, setSelectedTechnician] = useState<Technician | null>(MOCK_TECHNICIAN);
   const [bookingStep, setBookingStep] = useState(0);
@@ -216,7 +220,7 @@ const App: React.FC = () => {
   });
 
   // User Bookings State
-  const [userBookings, setUserBookings] = useState<Booking[]>(MOCK_BOOKINGS);
+  const [userBookings, setUserBookings] = useState<Booking[]>([]);
   const [activeBookingTab, setActiveBookingTab] = useState<'upcoming' | 'past'>('upcoming');
 
   // Sidebar State
@@ -227,6 +231,47 @@ const App: React.FC = () => {
     setError('');
     setFormErrors({});
   }, [currentScreen]);
+
+  // Load Services
+  useEffect(() => {
+    const loadServices = async () => {
+      const dbServices = await fetchServices();
+      if (dbServices.length > 0) {
+        // Map DB icons to Lucide icons
+        const iconMap: Record<string, any> = {
+          'Home': Home, 'Bug': Bug, 'Sparkles': Sparkles,
+          'Hammer': Wrench, 'Settings': Settings, 'Server': Briefcase,
+          'Briefcase': Briefcase, 'Coffee': Home, 'Heart': Home
+        };
+
+        const mappedServices = dbServices.map(s => ({
+          id: s.id,
+          label: s.label,
+          description: s.description,
+          icon: iconMap[s.icon_name] || Wrench
+        }));
+        setServices(mappedServices);
+      }
+    };
+    loadServices();
+  }, []);
+
+  // Load Bookings
+  useEffect(() => {
+    if (currentUser) {
+      const loadBookings = async () => {
+        try {
+          const bookings = await fetchUserBookings(currentUser.id);
+          setUserBookings(bookings);
+        } catch (err) {
+          console.error(err);
+        }
+      };
+      loadBookings();
+    } else {
+      setUserBookings([]);
+    }
+  }, [currentUser]);
 
   useEffect(() => {
     let interval: any;
@@ -281,7 +326,7 @@ const App: React.FC = () => {
           }
 
           // Trigger Notification based on status change
-          const serviceName = SERVICES.find(s => s.id === updatedBooking.serviceId)?.label || 'Service';
+          const serviceName = services.find(s => s.id === updatedBooking.serviceId)?.label || 'Service';
 
           if (updatedBooking.status === BookingStatus.CONFIRMED) {
             addNotification('Booking Confirmed', `Your ${serviceName} request has been confirmed. Technician is preparing.`);
@@ -579,16 +624,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleTechOnboardingSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
 
-    // Simulate API call to save technician details
-    setTimeout(() => {
-      setIsLoading(false);
-      resetStack(ScreenState.DASHBOARD);
-    }, 1500);
-  };
 
   const handleLogout = () => {
     setIsSidebarOpen(false);
@@ -610,15 +646,21 @@ const App: React.FC = () => {
     pushScreen(ScreenState.TECHNICIAN_PROFILE);
   };
 
-  const handleProfileClick = () => {
+  const handleProfileClick = async () => {
     setIsSidebarOpen(false);
     if (currentUser?.role === UserRole.TECHNICIAN) {
-      // Simulate loading own profile for technician
-      setSelectedTechnician(MOCK_TECHNICIAN);
+      setIsLoading(true);
+      const profile = await fetchTechnicianProfile(currentUser.id);
+      setIsLoading(false);
+
+      if (profile) {
+        setSelectedTechnician(profile);
+      } else {
+        // Fallback to mock if no profile found (or could direct to onboarding)
+        setSelectedTechnician(MOCK_TECHNICIAN);
+      }
       pushScreen(ScreenState.TECHNICIAN_PROFILE);
     } else {
-      // For customer, normally go to customer profile, but we'll just log or show dashboard for now
-      // as the request is focused on technician profile
       pushScreen(ScreenState.DASHBOARD);
     }
   };
@@ -635,58 +677,51 @@ const App: React.FC = () => {
     pushScreen(ScreenState.BOOKING);
   };
 
-  const confirmBooking = () => {
-    if (!selectedService || !bookingData.date) return;
+  const confirmBooking = async () => {
+    if (!selectedService || !bookingData.date || !currentUser) return;
 
     setIsLoading(true);
 
-    // Create new booking object
-    const newBooking: Booking = {
-      id: Date.now().toString(),
-      serviceId: selectedService.id,
-      date: bookingData.date,
-      time: bookingData.time,
-      status: BookingStatus.UPCOMING,
-      technicianName: 'Mike Reynolds', // Mock assigned technician
-      address: bookingData.address,
-      description: bookingData.description,
-      price: 32 // Mock price
-    };
+    try {
+      const newBooking = await createBooking({
+        serviceId: selectedService.id,
+        date: bookingData.date,
+        time: bookingData.time,
+        address: bookingData.address,
+        description: bookingData.description,
+        price: 32 // This should come from service details or dynamic calculation
+      }, currentUser.id);
 
-    // Simulate API call
-    setTimeout(async () => {
-      setIsLoading(false);
-      setBookingComplete(true);
-      setUserBookings(prev => [newBooking, ...prev]);
+      if (newBooking) {
+        setBookingComplete(true);
+        setUserBookings(prev => [newBooking, ...prev]);
 
-      // Mock sending email
-      if (currentUser?.email) {
-        await sendBookingConfirmationEmail(currentUser.email, {
-          serviceName: selectedService.label,
-          technicianName: newBooking.technicianName,
-          date: newBooking.date.toLocaleDateString(),
-          time: newBooking.time,
-          address: newBooking.address,
-          price: newBooking.price
-        });
-      } else if (currentUser) {
-        // Fallback if no email in user object but user exists (e.g. from simplistic mockup)
-        await sendBookingConfirmationEmail('user@example.com', {
-          serviceName: selectedService.label,
-          technicianName: newBooking.technicianName,
-          date: newBooking.date.toLocaleDateString(),
-          time: newBooking.time,
-          address: newBooking.address,
-          price: newBooking.price
-        });
+        // Mock sending email
+        if (currentUser?.email) {
+          await sendBookingConfirmationEmail(currentUser.email, {
+            serviceName: selectedService.label,
+            technicianName: newBooking.technicianName,
+            date: newBooking.date.toLocaleDateString(),
+            time: newBooking.time,
+            address: newBooking.address,
+            price: newBooking.price
+          });
+        }
+
+        // After 3 seconds, go back to dashboard
+        setTimeout(() => {
+          resetStack(ScreenState.DASHBOARD);
+          // startBookingStatusSimulation(newBooking); // Disabled simulation in favor of realtime updates
+        }, 4000);
+      } else {
+        setError("Failed to create booking. Please try again.");
       }
-
-      // After 3 seconds (slightly longer to read), go back to dashboard
-      setTimeout(() => {
-        resetStack(ScreenState.DASHBOARD);
-        startBookingStatusSimulation(newBooking);
-      }, 4000);
-    }, 1500);
+    } catch (err) {
+      console.error(err);
+      setError("An error occurred.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleCancelBooking = () => {
@@ -707,46 +742,29 @@ const App: React.FC = () => {
     pushScreen(ScreenState.RATING);
   };
 
-  const submitRating = (e: React.FormEvent) => {
+  const submitRating = async (e: React.FormEvent) => {
     e.preventDefault();
     if (ratingData.rating === 0) return;
 
     setIsLoading(true);
 
-    setTimeout(() => {
-      // 1. Update Booking
-      setUserBookings(prev => prev.map(b =>
-        b.id === ratingData.bookingId ? { ...b, rating: ratingData.rating, review: ratingData.comment } : b
-      ));
+    try {
+      const success = await submitBookingReview(ratingData.bookingId, ratingData.rating, ratingData.comment);
 
-      // 2. Update Technician Reviews (Simulated)
-      if (selectedTechnician) {
-        const newReview: Review = {
-          id: `r-${Date.now()}`,
-          userName: currentUser?.name || 'User',
-          rating: ratingData.rating,
-          comment: ratingData.comment,
-          date: 'Just now'
-        };
-
-        const updatedReviews = [newReview, ...selectedTechnician.reviews];
-        const newAverage = updatedReviews.reduce((acc, curr) => acc + curr.rating, 0) / updatedReviews.length;
-
-        const updatedTech = {
-          ...selectedTechnician,
-          reviews: updatedReviews,
-          rating: Number(newAverage.toFixed(1)),
-          reviewCount: selectedTechnician.reviewCount + 1
-        };
-
-        setSelectedTechnician(updatedTech);
-        // Also update constant if needed for persistence in this session
-        Object.assign(MOCK_TECHNICIAN, updatedTech);
+      if (success) {
+        // Update local state
+        setUserBookings(prev => prev.map(b =>
+          b.id === ratingData.bookingId ? { ...b, rating: ratingData.rating, review: ratingData.comment } : b
+        ));
+        popScreen();
+      } else {
+        setError('Failed to submit review');
       }
-
+    } catch (err) {
+      setError('Error submitting review');
+    } finally {
       setIsLoading(false);
-      popScreen(); // Go back to history
-    }, 1000);
+    }
   };
 
   const startEditProfile = () => {
@@ -778,6 +796,26 @@ const App: React.FC = () => {
       setIsLoading(false);
       popScreen(); // Go back to profile view
     }, 1000);
+  };
+
+  const handleTechOnboardingSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser) return;
+
+    setIsLoading(true);
+
+    try {
+      const success = await createTechnicianProfile(techFormData, currentUser.id);
+      if (success) {
+        resetStack(ScreenState.DASHBOARD);
+      } else {
+        setError("Failed to save profile.");
+      }
+    } catch (err) {
+      setError("Error saving profile");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleAddPaymentMethod = (e: React.FormEvent) => {
@@ -1353,7 +1391,7 @@ const App: React.FC = () => {
                   required
                 >
                   <option value="" disabled>Select a category</option>
-                  {SERVICES.map(s => (
+                  {services.map(s => (
                     <option key={s.id} value={s.id}>{s.label}</option>
                   ))}
                 </select>
@@ -1477,7 +1515,7 @@ const App: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-3 gap-4">
-            {SERVICES.map((service) => (
+            {services.map((service) => (
               <ServiceCard
                 key={service.id}
                 label={service.label}
@@ -2577,7 +2615,7 @@ const App: React.FC = () => {
             </div>
           ) : (
             filteredBookings.map((booking) => {
-              const service = SERVICES.find(s => s.id === booking.serviceId);
+              const service = services.find(s => s.id === booking.serviceId);
               const ServiceIcon = service?.icon || Wrench;
 
               return (
